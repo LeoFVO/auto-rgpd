@@ -5,119 +5,17 @@ import { simpleParser } from 'mailparser';
 import fs from 'fs';
 import nodemailer from 'nodemailer';
 import pug from 'pug';
+import { compilePugTemplate } from './utils/pug';
+import {
+  connectToImapServer,
+  extractUniqueSenders,
+  fetchEmails,
+} from './utils/imap';
 
 // Configuration de figlet
 figlet.defaults({ font: 'Standard' });
 const program = new Command();
 console.log(figlet.textSync('Auto RGPD'));
-
-// Fonction pour se connecter au serveur IMAP
-function connectToImapServer(email: string, password: string, server: string) {
-  return new Promise<Imap>((resolve, reject) => {
-    const imap = new Imap({
-      user: email,
-      password: password,
-      host: server,
-      port: 993,
-      tls: true,
-      tlsOptions: {
-        rejectUnauthorized: false, // Ignore self-signed certificate validation
-      },
-    });
-
-    imap.once('ready', () => {
-      resolve(imap);
-    });
-
-    imap.once('error', (error) => {
-      reject(error);
-    });
-
-    imap.connect();
-  });
-}
-
-// Fonction pour récupérer les emails
-function fetchEmails(imap: Imap): Promise<string[]> {
-  return new Promise((resolve, reject) => {
-    imap.openBox('INBOX', false, (error, box) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-
-      const emails: string[] = [];
-
-      imap.search(['ALL'], (searchError, results) => {
-        if (searchError) {
-          reject(searchError);
-          return;
-        }
-
-        const fetch = imap.fetch(results, { bodies: '', markSeen: false });
-
-        fetch.on('message', (msg, seqno) => {
-          msg.on('body', (stream) => {
-            simpleParser(stream, (parseError, mail) => {
-              if (!parseError && mail.from && mail.from.text) {
-                emails.push(mail.from.text);
-              }
-            });
-          });
-
-          msg.once('end', () => {
-            console.log(`Message ${seqno} fully processed`);
-          });
-        });
-
-        fetch.once('error', (fetchError) => {
-          reject(fetchError);
-        });
-
-        fetch.once('end', () => {
-          resolve(emails);
-        });
-      });
-    });
-  });
-}
-
-// Fonction pour extraire les émetteurs uniques
-function extractUniqueSenders(
-  emails: string[]
-): { email: string; name: string; domain: string }[] {
-  const uniqueSenders: {
-    [key: string]: { email: string; name: string; domain: string };
-  } = {};
-
-  emails.forEach((email) => {
-    const parsedEmail = email.match(/(.*)<(.+@.+\..+)>/);
-    if (parsedEmail) {
-      const name = parsedEmail[1].trim();
-      const email = parsedEmail[2].trim();
-      const domain = extractMainDomain(email);
-      uniqueSenders[domain] = { email, name, domain };
-    } else {
-      const domain = extractMainDomain(email);
-      uniqueSenders[domain] = { email, name: '', domain };
-    }
-  });
-
-  return Object.values(uniqueSenders);
-}
-
-function extractMainDomain(email: string): string | null {
-  const domainMatch = RegExp(/@([^.]+(\.[^.]+)+)$/).exec(email);
-  if (domainMatch) {
-    const domainParts = domainMatch[1].split('.');
-    if (domainParts.length >= 2) {
-      return `${domainParts[domainParts.length - 2]}.${
-        domainParts[domainParts.length - 1]
-      }`;
-    }
-  }
-  return null;
-}
 
 function readWhitelistFromFile(file: string): Promise<string[]> {
   return new Promise((resolve, reject) => {
@@ -144,7 +42,6 @@ function filterByWhitelist(
   return uniqueSenders.filter((sender) => !whitelist.includes(sender.domain));
 }
 
-// Définition de la commande "grab"
 program
   .command('grab')
   .description('Récupère toutes les adresses email qui vous ont écrit')
@@ -187,17 +84,6 @@ program
       console.error('Erreur lors de la récupération des emails :', error);
     }
   });
-
-// Fonction pour compiler le modèle Pug en HTML
-function compilePugTemplate(
-  templateFile: string,
-  firstname: string,
-  lastname: string
-): string {
-  const templateContent = fs.readFileSync(templateFile, 'utf-8');
-  const compiledTemplate = pug.compile(templateContent);
-  return compiledTemplate({ firstname, lastname });
-}
 
 // Définition de la commande "send"
 program
